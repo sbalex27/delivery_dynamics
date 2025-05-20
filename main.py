@@ -32,15 +32,27 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-START_CITY = "Mazatenango"
-DELIVERY_CAPACITY = 5
-ELITE_FRAC = 0.05
+START_CITY = "Mazatenango"  # Ciudad de inicio y fin de la ruta
+DELIVERY_CAPACITY = 5       # Capacidad máxima de entregas por viaje
+ELITE_FRAC = 0.05           # Fracción de élite en el GA generacional
 
 # --------------------------------------------------------------------------- #
 # Utilidades generales                                                         #
 # --------------------------------------------------------------------------- #
 
 def total_distance(route: List[str], dist: pd.DataFrame, start: str = START_CITY, cap: int = DELIVERY_CAPACITY) -> float:
+    """
+    Calcula la distancia total de una ruta considerando la capacidad de entregas.
+    
+    Args:
+        route (List[str]): Lista de ciudades a visitar en orden.
+        dist (pd.DataFrame): Matriz de distancias entre ciudades.
+        start (str): Ciudad de inicio y fin.
+        cap (int): Capacidad máxima de entregas antes de regresar al inicio.
+    
+    Returns:
+        float: Distancia total recorrida.
+    """
     total, current, load = 0.0, start, 0
     for city in route:
         total += dist.loc[current, city]
@@ -54,6 +66,15 @@ def total_distance(route: List[str], dist: pd.DataFrame, start: str = START_CITY
 
 
 def create_individual(cities: List[str]) -> List[str]:
+    """
+    Crea un individuo (ruta) aleatorio para la población inicial.
+    
+    Args:
+        cities (List[str]): Lista de ciudades (sin incluir la ciudad de inicio).
+    
+    Returns:
+        List[str]: Ruta aleatoria.
+    """
     ind = cities.copy()
     random.shuffle(ind)
     return ind
@@ -63,10 +84,30 @@ def create_individual(cities: List[str]) -> List[str]:
 # --------------------------------------------------------------------------- #
 
 def tournament(pop: List[Dict], k: int = 3) -> Dict:
+    """
+    Selección por torneo: elige el mejor individuo entre k seleccionados al azar.
+    
+    Args:
+        pop (List[Dict]): Población de individuos.
+        k (int): Tamaño del torneo.
+    
+    Returns:
+        Dict: Individuo ganador del torneo.
+    """
     return min(random.sample(pop, k), key=lambda i: i["fitness"])
 
 
 def ordered_crossover(p1: List[str], p2: List[str]) -> List[str]:
+    """
+    Cruce ordenado (OX): combina dos rutas para crear un hijo válido.
+    
+    Args:
+        p1 (List[str]): Primer padre.
+        p2 (List[str]): Segundo padre.
+    
+    Returns:
+        List[str]: Ruta hija resultante del cruce.
+    """
     n = len(p1)
     a, b = sorted(random.sample(range(n), 2))
     child = [None] * n
@@ -80,6 +121,16 @@ def ordered_crossover(p1: List[str], p2: List[str]) -> List[str]:
 
 
 def swap_mutation(route: List[str], p: float = 0.05) -> List[str]:
+    """
+    Mutación por intercambio: intercambia aleatoriamente pares de ciudades.
+    
+    Args:
+        route (List[str]): Ruta a mutar.
+        p (float): Probabilidad de mutación por gen.
+    
+    Returns:
+        List[str]: Ruta mutada.
+    """
     r = route.copy()
     for i in range(len(r)):
         if random.random() < p:
@@ -92,6 +143,16 @@ def swap_mutation(route: List[str], p: float = 0.05) -> List[str]:
 # --------------------------------------------------------------------------- #
 
 def two_opt(route: List[str], dist: pd.DataFrame) -> List[str]:
+    """
+    Optimización local 2-Opt: mejora la ruta invirtiendo segmentos.
+    
+    Args:
+        route (List[str]): Ruta inicial.
+        dist (pd.DataFrame): Matriz de distancias.
+    
+    Returns:
+        List[str]: Ruta optimizada localmente.
+    """
     improved, best = True, route
     while improved:
         improved = False
@@ -107,6 +168,16 @@ def two_opt(route: List[str], dist: pd.DataFrame) -> List[str]:
 
 
 def nearest_neighbour(cities: List[str], dist: pd.DataFrame) -> List[str]:
+    """
+    Construye una ruta usando el heurístico del vecino más cercano.
+    
+    Args:
+        cities (List[str]): Lista de ciudades a visitar.
+        dist (pd.DataFrame): Matriz de distancias.
+    
+    Returns:
+        List[str]: Ruta generada por el heurístico.
+    """
     unvisited = set(cities)
     route, current = [], START_CITY
     while unvisited:
@@ -121,6 +192,20 @@ def nearest_neighbour(cities: List[str], dist: pd.DataFrame) -> List[str]:
 # --------------------------------------------------------------------------- #
 
 def ga_elitist(dist: pd.DataFrame, *, pop_size: int, generations: int, mut: float, cr: float, seed=None):
+    """
+    Algoritmo genético generacional con elitismo.
+    
+    Args:
+        dist (pd.DataFrame): Matriz de distancias.
+        pop_size (int): Tamaño de la población.
+        generations (int): Número de generaciones.
+        mut (float): Probabilidad de mutación.
+        cr (float): Probabilidad de cruce.
+        seed (opcional): Semilla para reproducibilidad.
+    
+    Returns:
+        Tuple[Dict, List[float]]: Mejor individuo y evolución del fitness.
+    """
     if seed is not None:
         random.seed(seed); np.random.seed(seed)
     cities = [c for c in dist.index if c != START_CITY]
@@ -150,6 +235,20 @@ def ga_elitist(dist: pd.DataFrame, *, pop_size: int, generations: int, mut: floa
 # --------------------------------------------------------------------------- #
 
 def ss_ga(dist: pd.DataFrame, *, pop_size: int, generations: int, mut: float, cr: float, seed=None):
+    """
+    Algoritmo genético steady-state (reemplazo parcial).
+    
+    Args:
+        dist (pd.DataFrame): Matriz de distancias.
+        pop_size (int): Tamaño de la población.
+        generations (int): Número de generaciones equivalentes.
+        mut (float): Probabilidad de mutación.
+        cr (float): Probabilidad de cruce.
+        seed (opcional): Semilla para reproducibilidad.
+    
+    Returns:
+        Tuple[Dict, List[float]]: Mejor individuo y evolución del fitness.
+    """
     if seed is not None:
         random.seed(seed); np.random.seed(seed)
     cities = [c for c in dist.index if c != START_CITY]
@@ -179,6 +278,16 @@ def ss_ga(dist: pd.DataFrame, *, pop_size: int, generations: int, mut: float, cr
 # --------------------------------------------------------------------------- #
 
 def greedy_2opt(dist: pd.DataFrame, *, generations: int):
+    """
+    Algoritmo heurístico: vecino más cercano seguido de optimización 2-Opt.
+    
+    Args:
+        dist (pd.DataFrame): Matriz de distancias.
+        generations (int): Número de generaciones equivalentes (para graficar).
+    
+    Returns:
+        Tuple[Dict, List[float]]: Mejor ruta y evolución del fitness.
+    """
     cities = [c for c in dist.index if c != START_CITY]
     print("G2O: Vecino más cercano…", end=" ")
     route = nearest_neighbour(cities, dist)
@@ -194,6 +303,20 @@ def greedy_2opt(dist: pd.DataFrame, *, generations: int):
 # --------------------------------------------------------------------------- #
 
 def simulated_annealing(dist: pd.DataFrame, *, generations: int, steps_per_gen: int = 100, t0: float = 1000.0, alpha: float = 0.995, seed=None):
+    """
+    Recocido simulado (Simulated Annealing) para optimización de rutas.
+    
+    Args:
+        dist (pd.DataFrame): Matriz de distancias.
+        generations (int): Número de generaciones equivalentes.
+        steps_per_gen (int): Pasos por generación.
+        t0 (float): Temperatura inicial.
+        alpha (float): Factor de enfriamiento.
+        seed (opcional): Semilla para reproducibilidad.
+    
+    Returns:
+        Tuple[Dict, List[float]]: Mejor ruta y evolución del fitness.
+    """
     if seed is not None:
         random.seed(seed); np.random.seed(seed)
     cities = [c for c in dist.index if c != START_CITY]
@@ -225,6 +348,16 @@ def simulated_annealing(dist: pd.DataFrame, *, generations: int, steps_per_gen: 
 # --------------------------------------------------------------------------- #
 
 def hill_climb(route: List[str], dist: pd.DataFrame):
+    """
+    Búsqueda local Hill Climb: mejora la ruta por swaps hasta estancarse.
+    
+    Args:
+        route (List[str]): Ruta inicial.
+        dist (pd.DataFrame): Matriz de distancias.
+    
+    Returns:
+        List[str]: Ruta optimizada localmente.
+    """
     improved = True
     best = route
     while improved:
@@ -238,6 +371,18 @@ def hill_climb(route: List[str], dist: pd.DataFrame):
 
 
 def rr_hill_climb(dist: pd.DataFrame, *, generations: int, restarts: int = 50, seed=None):
+    """
+    Búsqueda local con reinicios aleatorios (Random-Restart Hill Climb).
+    
+    Args:
+        dist (pd.DataFrame): Matriz de distancias.
+        generations (int): Número de generaciones equivalentes (para graficar).
+        restarts (int): Número de reinicios aleatorios.
+        seed (opcional): Semilla para reproducibilidad.
+    
+    Returns:
+        Tuple[Dict, List[float]]: Mejor ruta y evolución del fitness.
+    """
     if seed is not None:
         random.seed(seed); np.random.seed(seed)
     cities = [c for c in dist.index if c != START_CITY]
@@ -259,6 +404,13 @@ def rr_hill_climb(dist: pd.DataFrame, *, generations: int, restarts: int = 50, s
 # --------------------------------------------------------------------------- #
 
 def plot_histories(histories: List[List[float]], labels: List[str]):
+    """
+    Grafica la evolución del fitness para cada algoritmo.
+    
+    Args:
+        histories (List[List[float]]): Lista de historiales de fitness.
+        labels (List[str]): Etiquetas para cada algoritmo.
+    """
     plt.figure(figsize=(9, 5))
     for h, lbl in zip(histories, labels):
         plt.plot(h, label=lbl)
@@ -266,6 +418,13 @@ def plot_histories(histories: List[List[float]], labels: List[str]):
 
 
 def plot_route(route: List[str], title: str):
+    """
+    Grafica la ruta óptima encontrada sobre un grafo circular.
+    
+    Args:
+        route (List[str]): Ruta a graficar.
+        title (str): Título del gráfico.
+    """
     cities = [START_CITY] + route + [START_CITY]
     G = nx.DiGraph(); G.add_nodes_from(cities); G.add_edges_from([(cities[i], cities[i + 1]) for i in range(len(cities) - 1)])
     pos = {START_CITY: (0, 0)}; angle = 2 * math.pi / (len(cities) - 1); radius = 5
@@ -278,6 +437,12 @@ def plot_route(route: List[str], title: str):
 # --------------------------------------------------------------------------- #
 
 def parse_args():
+    """
+    Parsea los argumentos de línea de comandos para la ejecución del script.
+    
+    Returns:
+        argparse.Namespace: Argumentos parseados.
+    """
     p = argparse.ArgumentParser("Comparativa: GA, SSGA, G2O, SA, RRHC")
     p.add_argument("--matrix", type=Path, default="matriz_distancias_suchitepequez.csv")
     p.add_argument("--generations", "-g", type=int, default=500, help="Generaciones de referencia")
@@ -290,6 +455,9 @@ def parse_args():
 # --------------------------------------------------------------------------- #
 
 def main():
+    """
+    Función principal: ejecuta la comparativa de algoritmos y muestra resultados.
+    """
     args = parse_args(); dist = pd.read_csv(args.matrix, index_col=0)
 
     best_ga, hist_ga = ga_elitist(dist, pop_size=args.population, generations=args.generations, mut=0.05, cr=0.8, seed=args.seed)
