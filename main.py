@@ -1,69 +1,54 @@
 # drone_route_ga.py
 """
-Proyecto: Optimización de Rutas de Drones con Algoritmos Genéticos
-Departamento de Suchitepéquez, Guatemala 18 puntos de entrega, punto de partida filial Mazatenango
+Optimización de rutas de drones - Comparativa de 5 algoritmos ligeros
+====================================================================
+1. **GA generacional elitista** (GA)          - referencia.
+2. **Steady-State GA** (SSGA)                 - reemplazo parcial.
+3. **Greedy + 2-Opt** (G2O)                  - heurístico instantáneo.
+4. **Simulated Annealing** (SA)               - enfriamiento simple.
+5. **Random-Restart Hill Climb** (RRHC)       - varias búsquedas locales.
 
-Ejecución rápida
----------------
-1. Instala dependencias (idealmente en un entorno virtual):
-   pip install -r requirements.txt
+Todos muestran progreso en consola y se grafican en la misma escala de generaciones.
 
-2. Coloca el archivo CSV de distancias (matriz_distancias_suchitepequez.csv) en el mismo directorio.
-
-3. Ejecuta:
-   python drone_route_ga.py --matrix matriz_distancias_suchitepequez.csv --generations 500 --population 150 --seed 42
-
-   Se abrirán dos ventanas: la gráfica de evolución del fitness y un grafo con la mejor ruta encontrada.
-
-Dependencias
-------------
-- pandas
-- numpy
-- matplotlib
-- networkx
-
-Descripción rápida
-------------------
-- **Cromosoma**: Permutación de los 18 municipios a visitar.
-- **Fitness**: Distancia total (km) recorrida por un único dron con capacidad de 5 paquetes.  
-  Cada vez que se alcanzan 5 entregas el dron regresa a la base a recargar.
-- **Selección**: Torneo (k=3).
-- **Cruzamiento**: Ordered Crossover (OX).
-- **Mutación**: Intercambio (swap) con probabilidad p=0.05.
-- **Élite**: 5 % mejores rutas pasan intactas a la siguiente generación.
-- **Visualización**: matplotlib (línea de fitness) + networkx (grafo de la ruta).
+Uso
+---
+```bash
+python drone_route_ga.py --matrix matriz_distancias_suchitepequez.csv \
+                         --generations 500 --population 150 --seed 42
+```
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import random
+import sys
 from pathlib import Path
-from typing import List, Dict, Tuple
+from typing import Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
 
-# ----------------------------- Modelo de Problema ---------------------------- #
-
 START_CITY = "Mazatenango"
-DELIVERY_CAPACITY = 5  # máx. paquetes por viaje
+DELIVERY_CAPACITY = 5
+ELITE_FRAC = 0.05
 
-# ----------------------------- Utilidades GA --------------------------------- #
+# --------------------------------------------------------------------------- #
+# Utilidades generales                                                         #
+# --------------------------------------------------------------------------- #
 
 def total_distance(route: List[str], dist: pd.DataFrame, start: str = START_CITY, cap: int = DELIVERY_CAPACITY) -> float:
-    """Calcula la distancia total, obligando retorno cada *cap* entregas."""
-    total = 0.0
-    current, load = start, 0
+    total, current, load = 0.0, start, 0
     for city in route:
         total += dist.loc[current, city]
         current, load = city, load + 1
-        if load == cap:  # regreso para recargar
+        if load == cap:
             total += dist.loc[current, start]
             current, load = start, 0
-    if current != start:  # regreso final
+    if current != start:
         total += dist.loc[current, start]
     return total
 
@@ -73,17 +58,24 @@ def create_individual(cities: List[str]) -> List[str]:
     random.shuffle(ind)
     return ind
 
+# --------------------------------------------------------------------------- #
+# Operadores GA                                                                #
+# --------------------------------------------------------------------------- #
+
+def tournament(pop: List[Dict], k: int = 3) -> Dict:
+    return min(random.sample(pop, k), key=lambda i: i["fitness"])
+
 
 def ordered_crossover(p1: List[str], p2: List[str]) -> List[str]:
-    N = len(p1)
-    a, b = sorted(random.sample(range(N), 2))
-    child = [None] * N
+    n = len(p1)
+    a, b = sorted(random.sample(range(n), 2))
+    child = [None] * n
     child[a : b + 1] = p1[a : b + 1]
-    pos = (b + 1) % N
+    pos = (b + 1) % n
     for gene in p2:
         if gene not in child:
             child[pos] = gene
-            pos = (pos + 1) % N
+            pos = (pos + 1) % n
     return child
 
 
@@ -95,117 +87,233 @@ def swap_mutation(route: List[str], p: float = 0.05) -> List[str]:
             r[i], r[j] = r[j], r[i]
     return r
 
+# --------------------------------------------------------------------------- #
+# 2‑Opt y heurística Greedy                                                    #
+# --------------------------------------------------------------------------- #
 
-# ----------------------------- Núcleo GA ------------------------------------- #
+def two_opt(route: List[str], dist: pd.DataFrame) -> List[str]:
+    improved, best = True, route
+    while improved:
+        improved = False
+        for i in range(1, len(best) - 2):
+            for j in range(i + 1, len(best)):
+                if j - i == 1:
+                    continue
+                new_route = best[:i] + best[i:j][::-1] + best[j:]
+                if total_distance(new_route, dist) < total_distance(best, dist):
+                    best = new_route
+                    improved = True
+    return best
 
-def genetic_algorithm(
-    dist: pd.DataFrame,
-    start_city: str = START_CITY,
-    pop_size: int = 150,
-    generations: int = 500,
-    elite_size: int = 5,
-    crossover_rate: float = 0.8,
-    mutation_rate: float = 0.05,
-    tournament_k: int = 3,
-    seed: int | None = None,
-) -> Tuple[Dict, List[float]]:
-    """Evoluciona rutas y devuelve (mejor_individuo, historial_fitness)."""
 
+def nearest_neighbour(cities: List[str], dist: pd.DataFrame) -> List[str]:
+    unvisited = set(cities)
+    route, current = [], START_CITY
+    while unvisited:
+        nxt = min(unvisited, key=lambda c: dist.loc[current, c])
+        route.append(nxt)
+        unvisited.remove(nxt)
+        current = nxt
+    return route
+
+# --------------------------------------------------------------------------- #
+# Algoritmo 1 – GA generacional elitista                                       #
+# --------------------------------------------------------------------------- #
+
+def ga_elitist(dist: pd.DataFrame, *, pop_size: int, generations: int, mut: float, cr: float, seed=None):
     if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
-
-    delivery_cities = [c for c in dist.index if c != start_city]
-
-    def fitness(route: List[str]) -> float:
-        return total_distance(route, dist, start=start_city, cap=DELIVERY_CAPACITY)
-
-    population = [{"route": create_individual(delivery_cities)} for _ in range(pop_size)]
-    for ind in population:
+        random.seed(seed); np.random.seed(seed)
+    cities = [c for c in dist.index if c != START_CITY]
+    fitness = lambda r: total_distance(r, dist)
+    elite = max(1, int(pop_size * ELITE_FRAC))
+    pop = [{"route": create_individual(cities)} for _ in range(pop_size)]
+    for ind in pop:
         ind["fitness"] = fitness(ind["route"])
-
-    history = []
-    for _ in range(generations):
-        population.sort(key=lambda ind: ind["fitness"])  # mejor al inicio
-        history.append(population[0]["fitness"])
-
-        # ---------------- Nuevo pool ---------------- #
-        new_pop: List[Dict] = population[:elite_size]  # élite
+    hist = []
+    for g in range(generations):
+        pop.sort(key=lambda i: i["fitness"])
+        best_fit = pop[0]["fitness"]
+        hist.append(best_fit)
+        sys.stdout.write(f"GA  Gen {g+1}/{generations} – {best_fit:.2f} km\r"); sys.stdout.flush()
+        new_pop = pop[:elite]
         while len(new_pop) < pop_size:
-            if random.random() < crossover_rate:
-                p1 = tournament(population, tournament_k)
-                p2 = tournament(population, tournament_k)
-                child_route = ordered_crossover(p1["route"], p2["route"])
-            else:
-                parent = tournament(population, tournament_k)
-                child_route = parent["route"].copy()
-            child_route = swap_mutation(child_route, mutation_rate)
-            new_pop.append({"route": child_route, "fitness": fitness(child_route)})
-        population = new_pop
+            route = tournament(pop)["route"].copy() if random.random() > cr else ordered_crossover(tournament(pop)["route"], tournament(pop)["route"])
+            route = swap_mutation(route, mut)
+            new_pop.append({"route": route, "fitness": fitness(route)})
+        pop = new_pop
+    print()
+    pop.sort(key=lambda i: i["fitness"])
+    return pop[0], hist
 
-    population.sort(key=lambda ind: ind["fitness"])
-    return population[0], history
+# --------------------------------------------------------------------------- #
+# Algoritmo 2 – Steady‑State GA                                               #
+# --------------------------------------------------------------------------- #
+
+def ss_ga(dist: pd.DataFrame, *, pop_size: int, generations: int, mut: float, cr: float, seed=None):
+    if seed is not None:
+        random.seed(seed); np.random.seed(seed)
+    cities = [c for c in dist.index if c != START_CITY]
+    fitness = lambda r: total_distance(r, dist)
+    pop = [{"route": create_individual(cities)} for _ in range(pop_size)]
+    for ind in pop:
+        ind["fitness"] = fitness(ind["route"])
+    hist, evals = [], generations * pop_size
+    for i in range(evals):
+        child = tournament(pop)["route"].copy() if random.random() > cr else ordered_crossover(tournament(pop)["route"], tournament(pop)["route"])
+        child = swap_mutation(child, mut)
+        child_fit = fitness(child)
+        worst = max(pop, key=lambda x: x["fitness"])
+        if child_fit < worst["fitness"]:
+            pop.remove(worst); pop.append({"route": child, "fitness": child_fit})
+        if (i + 1) % pop_size == 0:
+            gen = (i + 1) // pop_size
+            best_fit = min(pop, key=lambda x: x["fitness"])["fitness"]
+            hist.append(best_fit)
+            sys.stdout.write(f"SSGA Gen {gen}/{generations} – {best_fit:.2f} km\r"); sys.stdout.flush()
+    print()
+    best = min(pop, key=lambda x: x["fitness"])
+    return best, hist
+
+# --------------------------------------------------------------------------- #
+# Algoritmo 3 – Greedy + 2‑Opt                                                #
+# --------------------------------------------------------------------------- #
+
+def greedy_2opt(dist: pd.DataFrame, *, generations: int):
+    cities = [c for c in dist.index if c != START_CITY]
+    print("G2O: Vecino más cercano…", end=" ")
+    route = nearest_neighbour(cities, dist)
+    print("2‑Opt…", end=" ")
+    route = two_opt(route, dist)
+    fit = total_distance(route, dist)
+    print(f"Listo {fit:.2f} km")
+    hist = [fit] * generations
+    return {"route": route, "fitness": fit}, hist
+
+# --------------------------------------------------------------------------- #
+# Algoritmo 4 – Simulated Annealing                                           #
+# --------------------------------------------------------------------------- #
+
+def simulated_annealing(dist: pd.DataFrame, *, generations: int, steps_per_gen: int = 100, t0: float = 1000.0, alpha: float = 0.995, seed=None):
+    if seed is not None:
+        random.seed(seed); np.random.seed(seed)
+    cities = [c for c in dist.index if c != START_CITY]
+    current = create_individual(cities)
+    current_fit = total_distance(current, dist)
+    best, best_fit = current, current_fit
+    T = t0
+    hist = []
+    total_steps = generations * steps_per_gen
+    for step in range(total_steps):
+        # vecindario: swap aleatorio
+        i, j = random.sample(range(len(current)), 2)
+        candidate = current.copy(); candidate[i], candidate[j] = candidate[j], candidate[i]
+        cand_fit = total_distance(candidate, dist)
+        if cand_fit < current_fit or random.random() < math.exp((current_fit - cand_fit) / T):
+            current, current_fit = candidate, cand_fit
+            if cand_fit < best_fit:
+                best, best_fit = candidate, cand_fit
+        T *= alpha
+        if (step + 1) % steps_per_gen == 0:
+            gen = (step + 1) // steps_per_gen
+            hist.append(best_fit)
+            sys.stdout.write(f"SA  Gen {gen}/{generations} – {best_fit:.2f} km\r"); sys.stdout.flush()
+    print()
+    return {"route": best, "fitness": best_fit}, hist
+
+# --------------------------------------------------------------------------- #
+# Algoritmo 5 – Random‑Restart Hill Climb                                     #
+# --------------------------------------------------------------------------- #
+
+def hill_climb(route: List[str], dist: pd.DataFrame):
+    improved = True
+    best = route
+    while improved:
+        improved = False
+        for i in range(len(best) - 1):
+            for j in range(i + 1, len(best)):
+                new = best.copy(); new[i], new[j] = new[j], new[i]
+                if total_distance(new, dist) < total_distance(best, dist):
+                    best = new; improved = True
+    return best
 
 
-def tournament(pop: List[Dict], k: int) -> Dict:
-    return min(random.sample(pop, k), key=lambda ind: ind["fitness"])
+def rr_hill_climb(dist: pd.DataFrame, *, generations: int, restarts: int = 50, seed=None):
+    if seed is not None:
+        random.seed(seed); np.random.seed(seed)
+    cities = [c for c in dist.index if c != START_CITY]
+    best_route = None
+    best_fit = float("inf")
+    for r in range(1, restarts + 1):
+        route = create_individual(cities)
+        route = hill_climb(route, dist)
+        fit = total_distance(route, dist)
+        if fit < best_fit:
+            best_route, best_fit = route, fit
+        sys.stdout.write(f"RRHC Restart {r}/{restarts} – Mejor global: {best_fit:.2f} km\r"); sys.stdout.flush()
+    print()
+    hist = [best_fit] * generations
+    return {"route": best_route, "fitness": best_fit}, hist
 
-# ----------------------------- Visualización --------------------------------- #
+# --------------------------------------------------------------------------- #
+# Visualización                                                               #
+# --------------------------------------------------------------------------- #
 
-def plot_fitness(history: List[float]):
+def plot_histories(histories: List[List[float]], labels: List[str]):
     plt.figure(figsize=(9, 5))
-    plt.plot(history)
-    plt.title("Evolución del mejor fitness")
-    plt.xlabel("Generación")
-    plt.ylabel("Distancia (km)")
-    plt.tight_layout()
-    plt.show()
+    for h, lbl in zip(histories, labels):
+        plt.plot(h, label=lbl)
+    plt.legend(); plt.title("Evolución del fitness"); plt.xlabel("Generación equivalente"); plt.ylabel("Distancia (km)"); plt.tight_layout(); plt.show()
 
 
-def plot_route(route: List[str], start_city: str = START_CITY):
-    cities = [start_city] + route + [start_city]
-    G = nx.Graph()
-    G.add_nodes_from(cities)
-    G.add_edges_from([(cities[i], cities[i + 1]) for i in range(len(cities) - 1)])
+def plot_route(route: List[str], title: str):
+    cities = [START_CITY] + route + [START_CITY]
+    G = nx.DiGraph(); G.add_nodes_from(cities); G.add_edges_from([(cities[i], cities[i + 1]) for i in range(len(cities) - 1)])
+    pos = {START_CITY: (0, 0)}; angle = 2 * math.pi / (len(cities) - 1); radius = 5
+    for idx, city in enumerate(cities[1:-1], 1):
+        pos[city] = (radius * math.cos(angle * idx), radius * math.sin(angle * idx))
+    plt.figure(figsize=(9, 9)); nx.draw_networkx(G, pos, arrows=True, node_size=700, node_color="#8ecae6", edge_color="#ffb703"); plt.title(title); plt.axis("off"); plt.tight_layout(); plt.show()
 
-    pos = nx.spring_layout(G, seed=3)  # disposición estética reproducible
-    nx.draw_networkx_nodes(G, pos, node_color="#8ecae6", node_size=800)
-    nx.draw_networkx_edges(G, pos, edge_color="#ffb703", width=2)
-    nx.draw_networkx_labels(G, pos, font_size=8)
-    plt.title("Mejor ruta encontrada (orden de visita y retornos)")
-    plt.axis("off")
-    plt.tight_layout()
-    plt.show()
-
-# ----------------------------- CLI ------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# CLI                                                                         #
+# --------------------------------------------------------------------------- #
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Optimización de Ruta de Dron con GA")
-    p.add_argument("--matrix", type=Path, default="matriz_distancias_suchitepequez.csv", help="CSV con la matriz de distancias")
-    p.add_argument("--generations", "-g", type=int, default=500)
+    p = argparse.ArgumentParser("Comparativa: GA, SSGA, G2O, SA, RRHC")
+    p.add_argument("--matrix", type=Path, default="matriz_distancias_suchitepequez.csv")
+    p.add_argument("--generations", "-g", type=int, default=500, help="Generaciones de referencia")
     p.add_argument("--population", "-p", type=int, default=150)
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--seed", type=int, default=None)
     return p.parse_args()
 
+# --------------------------------------------------------------------------- #
+# Main                                                                        #
+# --------------------------------------------------------------------------- #
 
 def main():
-    args = parse_args()
-    df = pd.read_csv(args.matrix, index_col=0)
+    args = parse_args(); dist = pd.read_csv(args.matrix, index_col=0)
 
-    best, history = genetic_algorithm(
-        df,
-        pop_size=args.population,
-        generations=args.generations,
-        seed=args.seed,
-    )
+    best_ga, hist_ga = ga_elitist(dist, pop_size=args.population, generations=args.generations, mut=0.05, cr=0.8, seed=args.seed)
+    best_ssga, hist_ssga = ss_ga(dist, pop_size=args.population, generations=args.generations, mut=0.05, cr=0.8, seed=args.seed)
+    best_g2o, hist_g2o = greedy_2opt(dist, generations=args.generations)
+    best_sa, hist_sa = simulated_annealing(dist, generations=args.generations, seed=args.seed)
+    best_rrhc, hist_rrhc = rr_hill_climb(dist, generations=args.generations, restarts=50, seed=args.seed)
 
-    print("\n📦  Ruta óptima (orden de entrega):")
-    print(" -> ".join([START_CITY] + best["route"] + [START_CITY]))
-    print(f"\n🚀  Distancia total: {best['fitness']:.2f} km")
+    print("--- Resultados finales (distancia km) ---")
+    print(f"GA     : {best_ga['fitness']:.2f}")
+    print(f"SSGA   : {best_ssga['fitness']:.2f}")
+    print(f"G2O    : {best_g2o['fitness']:.2f}")
+    print(f"SA     : {best_sa['fitness']:.2f}")
+    print(f"RRHC   : {best_rrhc['fitness']:.2f}")
 
-    # Visualizaciones
-    plot_fitness(history)
-    plot_route(best["route"], start_city=START_CITY)
+    plot_histories([
+        hist_ga, hist_ssga, hist_g2o, hist_sa, hist_rrhc
+    ], ["GA", "SSGA", "G2O", "SA", "RRHC"])
+
+    plot_route(best_ga["route"], "Ruta óptima GA")
+    plot_route(best_ssga["route"], "Ruta óptima SSGA")
+    plot_route(best_g2o["route"], "Ruta G2O")
+    plot_route(best_sa["route"], "Ruta SA")
+    plot_route(best_rrhc["route"], "Ruta RRHC")
 
 
 if __name__ == "__main__":
